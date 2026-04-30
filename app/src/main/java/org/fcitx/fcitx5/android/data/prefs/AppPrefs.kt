@@ -36,6 +36,9 @@ class AppPrefs(private val sharedPreferences: SharedPreferences) {
         val pid = int("pid", 0)
         val editorInfoInspector = bool("editor_info_inspector", false)
         val needNotifications = bool("need_notifications", true)
+        val floatingKeyboardX = int("floating_keyboard_x", -1)
+        val floatingKeyboardY = int("floating_keyboard_y", -1)
+        val floatingKeyboardWidthPercent = int("floating_keyboard_width_percent", 75)
     }
 
     inner class Advanced : ManagedPreferenceCategory(R.string.advanced, sharedPreferences) {
@@ -244,6 +247,9 @@ class AppPrefs(private val sharedPreferences: SharedPreferences) {
             keyboardBottomPadding = primary
             keyboardBottomPaddingLandscape = secondary
         }
+
+        val floatingKeyboard =
+            switch(R.string.floating_keyboard, "floating_keyboard", false)
 
         val horizontalCandidateStyle = enumList(
             R.string.horizontal_candidate_style,

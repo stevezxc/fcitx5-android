@@ -159,6 +159,9 @@
     <string name="landscape">Landscape</string>
     <string name="keyboard_bottom_padding">Keyboard bottom padding</string>
     <string name="keyboard_side_padding">Keyboard side padding</string>
+    <string name="floating_keyboard">Floating keyboard</string>
+    <string name="dock_keyboard">Dock keyboard</string>
+    <string name="float_keyboard">Float keyboard</string>
     <string name="clipboard_suggestion">Show clipboard suggestions</string>
     <string name="disable_addon_warn_title">Disable Addon</string>
     <string name="disable_addon_warn_name">Disabling %1$s will also:</string>

@@ -142,6 +142,7 @@ class FcitxInputMethodService : LifecycleInputMethodService() {
 
     private val recreateInputViewPrefs: Array<ManagedPreference<*>> = arrayOf(
         prefs.keyboard.expandKeypressArea,
+        prefs.keyboard.floatingKeyboard,
         prefs.advanced.disableAnimation,
         prefs.advanced.ignoreSystemWindowInsets,
     )
@@ -599,8 +600,33 @@ class FcitxInputMethodService : LifecycleInputMethodService() {
 
     private var inputViewLocation = intArrayOf(0, 0)
 
+    /**
+     * Called by InputView when floating keyboard bounds change, to trigger insets recomputation.
+     */
+    fun onFloatingKeyboardBoundsChanged() {
+        // Force the system to recompute insets
+        window.window?.decorView?.requestLayout()
+    }
+
     override fun onComputeInsets(outInsets: Insets) {
-        if (inputDeviceMgr.isVirtualKeyboard) {
+        val iv = inputView
+        if (iv != null && iv.isFloatingMode && inputDeviceMgr.isVirtualKeyboard) {
+            // In floating mode: report no keyboard height so app uses full screen.
+            // Set touchable region to the floating keyboard bounds only.
+            val h = decorView.height
+            outInsets.apply {
+                contentTopInsets = h
+                visibleTopInsets = h
+                touchableInsets = Insets.TOUCHABLE_INSETS_REGION
+                val bounds = iv.floatingBounds
+                if (!bounds.isEmpty) {
+                    touchableRegion.set(bounds.left, bounds.top, bounds.right, bounds.bottom)
+                } else {
+                    // Fallback: entire screen is touchable until floating bounds are computed
+                    touchableRegion.set(0, 0, decorView.width, h)
+                }
+            }
+        } else if (inputDeviceMgr.isVirtualKeyboard) {
             inputView?.keyboardView?.getLocationInWindow(inputViewLocation)
             outInsets.apply {
                 contentTopInsets = inputViewLocation[1]

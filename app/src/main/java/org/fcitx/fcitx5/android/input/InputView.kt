@@ -8,11 +8,13 @@ package org.fcitx.fcitx5.android.input
 import android.annotation.SuppressLint
 import android.content.res.Configuration
 import android.graphics.Point
+import android.graphics.Rect
 import android.os.Build
 import android.view.View
 import android.view.WindowInsets
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InlineSuggestionsResponse
+import android.widget.FrameLayout
 import android.widget.ImageView
 import androidx.annotation.Keep
 import androidx.annotation.RequiresApi
@@ -31,6 +33,7 @@ import org.fcitx.fcitx5.android.input.broadcast.PreeditEmptyStateComponent
 import org.fcitx.fcitx5.android.input.broadcast.PunctuationComponent
 import org.fcitx.fcitx5.android.input.broadcast.ReturnKeyDrawableComponent
 import org.fcitx.fcitx5.android.input.candidates.horizontal.HorizontalCandidateComponent
+import org.fcitx.fcitx5.android.input.floating.FloatingKeyboardController
 import org.fcitx.fcitx5.android.input.keyboard.CommonKeyActionListener
 import org.fcitx.fcitx5.android.input.keyboard.KeyboardHeightPercentBase.DisplayMetrics
 import org.fcitx.fcitx5.android.input.keyboard.KeyboardHeightPercentBase.RealSize
@@ -66,6 +69,7 @@ import splitties.views.dsl.core.view
 import splitties.views.dsl.core.wrapContent
 import splitties.views.imageDrawable
 import timber.log.Timber
+import kotlin.math.min
 
 @SuppressLint("ViewConstructor")
 class InputView(
@@ -133,6 +137,7 @@ class InputView(
     private val keyboardPrefs = AppPrefs.getInstance().keyboard
 
     private val focusChangeResetKeyboard by keyboardPrefs.focusChangeResetKeyboard
+    private val floatingKeyboardPref = keyboardPrefs.floatingKeyboard
 
     private val keyboardHeightPercent = keyboardPrefs.keyboardHeightPercent
     private val keyboardHeightPercentLandscape = keyboardPrefs.keyboardHeightPercentLandscape
@@ -154,42 +159,72 @@ class InputView(
         keyboardHeightPercentBase,
     )
 
+    // Floating keyboard support
+    var isFloatingMode = when (service.resources.configuration.orientation) {
+        Configuration.ORIENTATION_LANDSCAPE -> true
+        else -> floatingKeyboardPref.getValue()
+    }
+        private set
+
+    val floatingBounds: Rect get() = floatingController.bounds
+
+    private val floatingController = FloatingKeyboardController(theme) {
+        service.onFloatingKeyboardBoundsChanged()
+    }
+
     private val keyboardHeightPx: Int
         get() {
-            val baseType = keyboardHeightPercentBase.getValue()
-            val base = when (baseType) {
-                DisplayMetrics -> resources.displayMetrics.heightPixels
-                RealSize -> Point().also {
-                    @Suppress("DEPRECATION")
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                        context.display
-                    } else {
-                        context.windowManager.defaultDisplay
-                    }.getRealSize(it)
-                }.y
-            }
-            val percent = when (resources.configuration.orientation) {
-                Configuration.ORIENTATION_LANDSCAPE -> keyboardHeightPercentLandscape
-                else -> keyboardHeightPercent
+            val percent = if (isFloatingMode) {
+                keyboardHeightPercent
+            } else {
+                when (resources.configuration.orientation) {
+                    Configuration.ORIENTATION_LANDSCAPE -> keyboardHeightPercentLandscape
+                    else -> keyboardHeightPercent
+                }
             }.getValue()
-            Timber.d("keyboardHeightPx get(): baseType=${baseType}, base=${base}, percent=${percent}")
-            return base * percent / 100
+            val referenceHeight = if (isFloatingMode) {
+                val metrics = resources.displayMetrics
+                maxOf(metrics.widthPixels, metrics.heightPixels)
+            } else {
+                val baseType = keyboardHeightPercentBase.getValue()
+                when (baseType) {
+                    DisplayMetrics -> resources.displayMetrics.heightPixels
+                    RealSize -> Point().also {
+                        @Suppress("DEPRECATION")
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                            context.display
+                        } else {
+                            context.windowManager.defaultDisplay
+                        }.getRealSize(it)
+                    }.y
+                }
+            }
+            Timber.d("keyboardHeightPx get(): isFloating=$isFloatingMode, referenceHeight=$referenceHeight, percent=$percent")
+            return referenceHeight * percent / 100
         }
 
     private val keyboardSidePaddingPx: Int
         get() {
-            val value = when (resources.configuration.orientation) {
-                Configuration.ORIENTATION_LANDSCAPE -> keyboardSidePaddingLandscape
-                else -> keyboardSidePadding
+            val value = if (isFloatingMode) {
+                keyboardSidePadding
+            } else {
+                when (resources.configuration.orientation) {
+                    Configuration.ORIENTATION_LANDSCAPE -> keyboardSidePaddingLandscape
+                    else -> keyboardSidePadding
+                }
             }.getValue()
             return dp(value)
         }
 
     private val keyboardBottomPaddingPx: Int
         get() {
-            val value = when (resources.configuration.orientation) {
-                Configuration.ORIENTATION_LANDSCAPE -> keyboardBottomPaddingLandscape
-                else -> keyboardBottomPadding
+            val value = if (isFloatingMode) {
+                keyboardBottomPadding
+            } else {
+                when (resources.configuration.orientation) {
+                    Configuration.ORIENTATION_LANDSCAPE -> keyboardBottomPaddingLandscape
+                    else -> keyboardBottomPadding
+                }
             }.getValue()
             return dp(value)
         }
@@ -198,10 +233,21 @@ class InputView(
     private val onKeyboardSizeChangeListener = ManagedPreferenceProvider.OnChangeListener { key ->
         if (keyboardSizePrefs.any { it.key == key }) {
             updateKeyboardSize()
+            if (isFloatingMode) {
+                val root = floatingRoot ?: return@OnChangeListener
+                val rootWidth = root.width
+                val rootHeight = root.height
+                if (rootWidth > 0 && rootHeight > 0) {
+                    updateFloatingLayout(rootWidth, rootHeight)
+                }
+            }
         }
     }
 
     val keyboardView: View
+
+    /** FrameLayout used as the root for floating mode */
+    private var floatingRoot: FrameLayout? = null
 
     init {
         // MUST call before any operation
@@ -261,20 +307,61 @@ class InputView(
             })
         }
 
-        updateKeyboardSize()
+        if (isFloatingMode) {
+            // Floating mode: keyboard in a draggable/resizable container
+            // Still need to set internal keyboard dimensions (windowManager height, padding, etc.)
+            updateKeyboardSize()
 
-        add(preedit.ui.root, lParams(matchParent, wrapContent) {
-            above(keyboardView)
-            centerHorizontally()
-        })
-        add(keyboardView, lParams(matchParent, wrapContent) {
-            centerHorizontally()
-            bottomOfParent()
-        })
-        add(popup.root, lParams(matchParent, matchParent) {
-            centerVertically()
-            centerHorizontally()
-        })
+            val root = FrameLayout(context)
+            val container = floatingController.createFloatingContainer(context, keyboardView)
+            root.addView(container)
+            root.addView(
+                popup.root,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+                )
+            )
+            floatingRoot = root
+            add(root, lParams(matchParent, matchParent) {
+                topOfParent()
+                bottomOfParent()
+                centerHorizontally()
+            })
+            add(preedit.ui.root, lParams(matchParent, wrapContent) {
+                topOfParent()
+                centerHorizontally()
+            })
+            // Update floating layout after first measure using actual parent dimensions.
+            var lastRootWidth = 0
+            var lastRootHeight = 0
+            root.addOnLayoutChangeListener { _, left, top, right, bottom, _, _, _, _ ->
+                val rootWidth = right - left
+                val rootHeight = bottom - top
+                if (rootWidth > 0 && rootHeight > 0 &&
+                    (rootWidth != lastRootWidth || rootHeight != lastRootHeight)
+                ) {
+                    lastRootWidth = rootWidth
+                    lastRootHeight = rootHeight
+                    updateFloatingLayout(rootWidth, rootHeight)
+                }
+            }
+        } else {
+            // Docked mode: standard bottom-pinned keyboard
+            updateKeyboardSize()
+            add(preedit.ui.root, lParams(matchParent, wrapContent) {
+                above(keyboardView)
+                centerHorizontally()
+            })
+            add(keyboardView, lParams(matchParent, wrapContent) {
+                centerHorizontally()
+                bottomOfParent()
+            })
+            add(popup.root, lParams(matchParent, matchParent) {
+                centerVertically()
+                centerHorizontally()
+            })
+        }
 
         keyboardPrefs.registerOnChangeListener(onKeyboardSizeChangeListener)
         advancedPrefs.registerOnChangeListener(onKeyboardSizeChangeListener)
@@ -318,9 +405,19 @@ class InputView(
         kawaiiBar.view.setPadding(sidePadding, 0, sidePadding, 0)
     }
 
+    private fun updateFloatingLayout(rootWidth: Int, rootHeight: Int) {
+        val fullKeyboardViewHeight =
+            dp(KawaiiBarComponent.HEIGHT) + keyboardHeightPx + keyboardBottomPaddingPx
+        val metrics = resources.displayMetrics
+        val deviceWidth = min(metrics.widthPixels, metrics.heightPixels)
+        floatingController.updateLayout(rootWidth, rootHeight, deviceWidth, fullKeyboardViewHeight)
+    }
+
     override fun onApplyWindowInsets(insets: WindowInsets): WindowInsets {
-        bottomPaddingSpace.updateLayoutParams<LayoutParams> {
-            bottomMargin = getNavBarBottomInset(insets)
+        if (!isFloatingMode) {
+            bottomPaddingSpace.updateLayoutParams<LayoutParams> {
+                bottomMargin = getNavBarBottomInset(insets)
+            }
         }
         return insets
     }
